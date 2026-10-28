@@ -1,0 +1,72 @@
+name: PR Preview Publish
+
+on:
+  workflow_run:
+    workflows: [PR Preview Build]
+    types: [completed]
+  pull_request_target:
+    branches: [master]
+    types: [closed]
+
+permissions: {}
+
+concurrency:
+  group: pr-preview-publish-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'Ledger-Donjon/ledger-donjon.github.io' &&
+      github.repository_id == '191391592' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'pull_request_target' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: preview
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      # github.sha is the trusted default-branch context for BOTH event routes.
+      # Never replace it with workflow_run.head_sha or a PR revision.
+      - name: Checkout only trusted publisher code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Ledger-Donjon/ledger-donjon.github.io
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: /.github/scripts/preview.py
+          sparse-checkout-cone-mode: false
+
+      - name: Check live event, workflow, run and PR binding
+        run: python3 -I .github/scripts/preview.py check
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Mint preview-repository-only installation token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.PREVIEW_APP_ID }}
+          private-key: ${{ secrets.PREVIEW_APP_PRIVATE_KEY }}
+          owner: Ledger-Donjon
+          repositories: ledger-donjon-preview.github.io
+          permission-contents: write
+          skip-token-revoke: false
+
+      - name: Validate site data and update only the PR preview tree
+        run: python3 -I .github/scripts/preview.py publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_TOKEN: ${{ steps.app.outputs.token }}
+
+      # The action also registers a post-job revoke handler. This explicit step
+      # makes an immediate revocation failure visible as a failed job.
+      - name: Revoke installation token immediately after use
+        if: ${{ always() && steps.app.outputs.token != '' }}
+        run: python3 -I .github/scripts/preview.py revoke
+        env:
+          PREVIEW_TOKEN: ${{ steps.app.outputs.token }}
