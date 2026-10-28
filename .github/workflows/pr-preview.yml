@@ -1,90 +1,50 @@
-name: PR Preview
+name: PR Preview Build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-preview-${{ github.ref }}
+  group: pr-preview-build-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  preview:
+  build:
     runs-on: ubuntu-latest
-    environment: preview
+    timeout-minutes: 15
+    # No environment, secrets, write permissions, or shared privileged runner.
     steps:
-      - name: Checkout
-        if: github.event.action != 'closed'
-        uses: actions/checkout@v4
+      - name: Checkout exact PR source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Setup Node
-        if: github.event.action != 'closed'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
-          cache: npm
+          node-version: '22'
+          # Do not share caches with the privileged publication workflow.
 
       - name: Install dependencies
-        if: github.event.action != 'closed'
         run: npm ci
 
       - name: Build with Astro
-        if: github.event.action != 'closed'
         run: npm run build
         env:
-          PREVIEW_BASE: "/pr-preview/pr-${{ github.event.number }}/"
-          PREVIEW_SITE: "https://ledger-donjon.github.io"
+          PREVIEW_BASE: /pr-preview/pr-${{ github.event.pull_request.number }}/
+          PREVIEW_SITE: https://ledger-donjon.github.io
 
-      - name: Deploy PR Preview
-        if: github.event.action != 'closed'
-        uses: JamesIves/github-pages-deploy-action@v4
+      - name: Upload untrusted site data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          token: ${{ secrets.PREVIEW_DEPLOY_TOKEN }}
-          repository-name: Ledger-Donjon/ledger-donjon-preview.github.io
-          branch: gh-pages
-          folder: ./dist
-          target-folder: pr-preview/pr-${{ github.event.number }}
-          clean: false
-          commit-message: "Deploy preview for PR #${{ github.event.number }}"
-
-      - name: Ensure .nojekyll at preview root
-        if: github.event.action != 'closed'
-        run: |
-          mkdir -p preview-root
-          touch preview-root/.nojekyll
-
-      - name: Deploy .nojekyll to preview root
-        if: github.event.action != 'closed'
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          token: ${{ secrets.PREVIEW_DEPLOY_TOKEN }}
-          repository-name: Ledger-Donjon/ledger-donjon-preview.github.io
-          branch: gh-pages
-          folder: ./preview-root
-          target-folder: .
-          clean: false
-          commit-message: "Ensure .nojekyll at preview root"
-
-      - name: Checkout preview repo for cleanup
-        if: github.event.action == 'closed'
-        uses: actions/checkout@v4
-        with:
-          repository: Ledger-Donjon/ledger-donjon-preview.github.io
-          ref: gh-pages
-          token: ${{ secrets.PREVIEW_DEPLOY_TOKEN }}
-          path: preview-repo
-
-      - name: Remove PR preview
-        if: github.event.action == 'closed'
-        run: |
-          rm -rf "preview-repo/pr-preview/pr-${{ github.event.number }}"
-          if [ -n "$(git -C preview-repo status --porcelain)" ]; then
-            git -C preview-repo config user.name "github-actions[bot]"
-            git -C preview-repo config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C preview-repo add -A
-            git -C preview-repo commit -m "Remove preview for PR #${{ github.event.number }}"
-            git -C preview-repo push
-          fi
+          name: pr-preview-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
+          overwrite: false
